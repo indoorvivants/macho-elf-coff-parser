@@ -15,15 +15,27 @@ object Main {
 
     val macho = MachO.parse(ds)
     val sections = macho.segments.flatMap(_.sections)
+    pprintln(sections)
 
-    sections.find(_.sectname == "__debug_info").map { debugSection =>
-      val offset = debugSection.offset
-      pprint.pprintln(debugSection, showFieldNames = true)
+    // sections.find(_.sectname == "__debug_info").map { debugSection =>
+    //   val offset = debugSection.offset
+    //   pprint.pprintln(debugSection, showFieldNames = true)
 
-      raf.seek(offset)
-      val channel = Channels.newInputStream(raf.getChannel())
+    //   raf.seek(offset)
 
-      DWARF.parse(new DataInputStream(channel))
-    }
+    //   pprintln(DWARF.parse(raf))
+    // }
+
+    val dwarf = for {
+      debug_info <- sections.find(_.sectname == "__debug_info")
+      debug_abbrev <- sections.find(_.sectname == "__debug_abbrev")
+
+    } yield DWARF.parse(
+      raf,
+      debug_info_offset = debug_info.offset,
+      debug_abbrev_offset = debug_abbrev.offset
+    )
+
+    pprintln(dwarf)
   }
 }

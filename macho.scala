@@ -32,7 +32,10 @@ object CommonParsers {
         val b3 = stream.readByte()
         val b4 = stream.readByte()
 
-        (b1 & 0xff) | (b2 & 0xff) << 8 | (b3 & 0xff) << 16 | (b4 & 0xff) << 24
+        (b1 & 0xff) |
+          (b2 & 0xff) << 8 |
+          (b3 & 0xff) << 16 |
+          (b4 & 0xff) << 24
       case BIG =>
         stream.readInt()
     }
@@ -49,9 +52,14 @@ object CommonParsers {
         val b7 = stream.readByte().toLong
         val b8 = stream.readByte().toLong
 
-        ((b1 & 0xff) | (b2 & 0xff) << 8 | (b3 & 0xff) << 16 | (b4 & 0xff) << 24
-          | (b5 & 0xff) << 32 | (b6 & 0xff) << 40 | (b7 & 0xff) << 48
-          | (b8 | 0xff) << 56)
+        ((b1 & 0xff) |
+          (b2 & 0xff) << 8 |
+          (b3 & 0xff) << 16 |
+          (b4 & 0xff) << 24 |
+          (b5 & 0xff) << 32 |
+          (b6 & 0xff) << 40 |
+          (b7 & 0xff) << 48 |
+          (b8 & 0xff) << 56)
 
       case BIG =>
         stream.readLong()
