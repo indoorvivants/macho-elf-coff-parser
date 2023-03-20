@@ -15,27 +15,30 @@ object Main {
 
     val macho = MachO.parse(ds)
     val sections = macho.segments.flatMap(_.sections)
-    pprintln(sections)
-
-    // sections.find(_.sectname == "__debug_info").map { debugSection =>
-    //   val offset = debugSection.offset
-    //   pprint.pprintln(debugSection, showFieldNames = true)
-
-    //   raf.seek(offset)
-
-    //   pprintln(DWARF.parse(raf))
-    // }
 
     val dwarf = for {
       debug_info <- sections.find(_.sectname == "__debug_info")
       debug_abbrev <- sections.find(_.sectname == "__debug_abbrev")
+      debug_str <- sections.find(_.sectname == "__debug_str")
+      dwarf = DWARF.parse(
+        raf,
+        debug_info = DWARF.Section(debug_info.offset, debug_info.size),
+        debug_abbrev = DWARF.Section(debug_abbrev.offset, debug_abbrev.size),
+        debug_str = DWARF.Section(debug_str.offset, debug_str.size)
+      )
 
-    } yield DWARF.parse(
-      raf,
-      debug_info_offset = debug_info.offset,
-      debug_abbrev_offset = debug_abbrev.offset
-    )
+    } yield {
 
-    pprintln(dwarf)
+      val strps =
+        dwarf.units.flatMap(
+          _.values
+            .filter(_._1.form == DWARF.Form.DW_FORM_strp)
+            .map(_._2.asInstanceOf[Int])
+        )
+
+      strps.foreach { strp => 
+        println(dwarf.strings.read(strp))
+      }
+    }
   }
 }
