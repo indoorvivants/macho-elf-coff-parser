@@ -5,32 +5,35 @@ import scala.collection.immutable.IntMap
 import DWARF.Form.DW_FORM_strp
 import java.nio.channels.FileChannel
 
-case class DWARF(
-    header: DWARF.Header,
-    abbrevs: Array[DWARF.Abbrev],
-    units: Array[DWARF.CompileUnit],
-    strings: DWARF.Strings
-)
-
 object DWARF {
   implicit val endi = Endianness.LITTLE
   import CommonParsers._
+
+  case class DIE(
+      header: DWARF.Header,
+      abbrevs: Vector[DWARF.Abbrev],
+      units: Vector[DWARF.CompileUnit]
+  )
+
   case class Header(
       version: Int,
       is64: Boolean,
       unit_length: Long,
       unit_type: Byte,
       debug_abbrev_offset: Long,
-      address_size: Int
+      address_size: Long,
+      unit_offset: Long
   )
   object Header {
-    def parse(implicit ds: DataInputStream) = {
+    def parse(raf: RandomAccessFile)(implicit ds: DataInputStream) = {
 
       val unit_length_s = uint32()
 
       val (dwarf64, unit_length) = if (unit_length_s == 0xffffffff) {
         (true, uint64())
       } else (false, unit_length_s.toLong)
+
+      val unit_offset = raf.getChannel().position()
 
       val version = uint16()
       assert(
@@ -62,7 +65,8 @@ object DWARF {
         unit_length = unit_length,
         unit_type = unit_type,
         debug_abbrev_offset = debug_abbrev_offset,
-        address_size = address_size.toInt
+        address_size = address_size.toInt,
+        unit_offset = unit_offset
       )
 
     }
@@ -72,7 +76,7 @@ object DWARF {
       code: Int,
       tag: Tag,
       children: Boolean,
-      attributes: Array[Attr]
+      attributes: Vector[Attr]
   )
   case class Attr(at: Attribute, form: Form, value: Int)
 
@@ -98,7 +102,7 @@ object DWARF {
           val tag = read_unsigned_leb128()
           val children = uint8() == 1
 
-          val attrs = Array.newBuilder[Attr]
+          val attrs = Vector.newBuilder[Attr]
 
           var stop = false
 
@@ -114,7 +118,7 @@ object DWARF {
         }
       }
 
-      val abbrevs = Array.newBuilder[Abbrev]
+      val abbrevs = Vector.newBuilder[Abbrev]
 
       var stop = false
       while (!stop) {
@@ -153,42 +157,60 @@ object DWARF {
   def parse(
       raf: RandomAccessFile,
       debug_info: Section,
-      debug_abbrev: Section,
-      debug_str: Section
+      debug_abbrev: Section
   ) = {
-    val channel = raf.getChannel()
-    implicit val ds =
-      new DataInputStream(Channels.newInputStream(channel))
-
-    raf.seek(debug_abbrev.offset)
-
-    val abbrev = Abbrev.parse(ds)
-    val idx = IntMap(abbrev.map(a => a.code -> a): _*)
-
     raf.seek(debug_info.offset)
-    val header = Header.parse(ds)
+    val end_offset = debug_info.offset + debug_info.size
+    def stop = raf.getChannel().position() >= end_offset
+    val dies = Vector.newBuilder[DIE]
+    while (!stop) {
+      val die = DIE.parse(raf, debug_info, debug_abbrev)
 
-    val units = readUnits(channel, debug_info, header, idx)
-    val strings = Strings.parse(raf, debug_str)
+      dies += die
 
-    DWARF(header, abbrev, units, strings)
+    }
+
+    dies.result()
+  }
+
+  object DIE {
+    def parse(
+        raf: RandomAccessFile,
+        debug_info: Section,
+        debug_abbrev: Section
+    ) = {
+
+      val channel = raf.getChannel()
+      implicit val ds =
+        new DataInputStream(Channels.newInputStream(channel))
+      val header = Header.parse(raf)
+      val pos = channel.position()
+
+      raf.seek(debug_abbrev.offset + header.debug_abbrev_offset)
+      val abbrev = Abbrev.parse(ds)
+      val idx = IntMap(abbrev.map(a => a.code -> a): _*)
+
+      raf.seek(pos)
+
+      val units = readUnits(channel, header.unit_offset, header, idx)
+
+      DIE(header, abbrev, units)
+    }
   }
 
   def readUnits(
       channel: FileChannel,
-      debug_info: Section,
+      offset: Long,
       header: Header,
       idx: IntMap[Abbrev]
   )(implicit ds: DataInputStream) = {
 
-    val end_offset = debug_info.offset + header.unit_length
+    val end_offset = offset + header.unit_length
 
-    var stop = false
-
-    val units = Array.newBuilder[CompileUnit]
+    def stop = channel.position() >= end_offset
+    val units = Vector.newBuilder[CompileUnit]
 
     while (!stop) {
-      stop = channel.position() >= end_offset
       val attrs = Map.newBuilder[Attr, Any]
 
       val code = read_unsigned_leb128()
