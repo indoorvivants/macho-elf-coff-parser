@@ -6,7 +6,7 @@ import DWARF.Form.DW_FORM_strp
 import java.nio.channels.FileChannel
 
 object DWARF {
-  implicit val endi = Endianness.LITTLE
+  implicit val endi: Endianness = Endianness.LITTLE
   import CommonParsers._
 
   case class DIE(
@@ -25,7 +25,7 @@ object DWARF {
       unit_offset: Long
   )
   object Header {
-    def parse(raf: RandomAccessFile)(implicit ds: DataInputStream) = {
+    def parse(raf: RandomAccessFile)(implicit ds: DataInputStream): Header = {
 
       val unit_length_s = uint32()
 
@@ -41,7 +41,7 @@ object DWARF {
         s"Expected DWARF version 3 (for Scala Native) , got $version instead"
       )
 
-      def read_ulong =
+      def read_ulong: Long =
         if (dwarf64) uint64() else uint32()
 
       val (unit_type: Byte, address_size, debug_abbrev_offset) =
@@ -81,7 +81,7 @@ object DWARF {
   case class Attr(at: Attribute, form: Form, value: Int)
 
   object Abbrev {
-    def parse(implicit ds: DataInputStream) = {
+    def parse(implicit ds: DataInputStream): Vector[Abbrev] = {
       def readAttribute: Option[Attr] = {
         val at = read_unsigned_leb128()
         val form = read_unsigned_leb128()
@@ -134,7 +134,7 @@ object DWARF {
   case class CompileUnit(abbrev: Option[Abbrev], values: Map[Attr, Any])
   case class Section(offset: Int, size: Long)
   case class Strings(buf: Array[Byte]) {
-    def read(at: Int) = {
+    def read(at: Int): String = {
       assert(at < buf.length)
       val until = buf.indexWhere(_ == 0, at)
 
@@ -142,7 +142,7 @@ object DWARF {
     }
   }
   object Strings {
-    def parse(raf: RandomAccessFile, debug_str: Section) = {
+    def parse(raf: RandomAccessFile, debug_str: Section): Strings = {
       val pos = raf.getChannel().position()
       raf.seek(debug_str.offset)
 
@@ -158,7 +158,7 @@ object DWARF {
       raf: RandomAccessFile,
       debug_info: Section,
       debug_abbrev: Section
-  ) = {
+  ): Vector[DIE] = {
     raf.seek(debug_info.offset)
     val end_offset = debug_info.offset + debug_info.size
     def stop = raf.getChannel().position() >= end_offset
@@ -203,7 +203,7 @@ object DWARF {
       offset: Long,
       header: Header,
       idx: IntMap[Abbrev]
-  )(implicit ds: DataInputStream) = {
+  )(implicit ds: DataInputStream): Vector[CompileUnit] = {
 
     val end_offset = offset + header.unit_length
 
@@ -249,6 +249,7 @@ object DWARF {
             uint32()
           else if (header.address_size == 8)
             uint64()
+          else throw new RuntimeException(s"Uknown header size: ${header.address_size}")
         case DW_FORM_flag =>
           uint8() == 1
         case DW_FORM_ref_addr =>
@@ -259,15 +260,11 @@ object DWARF {
           ds.readNBytes(len)
 
       }
+
     }
   }
 
-  // alias Value = Bool | Int32 | Int64 | Slice(UInt8) | String | UInt16 | UInt32 | UInt64 | UInt8 | UInt128
-  // case class AttributeValue(attr: Attr, value: ???)
-
-  sealed trait Value
-
-  def read_unsigned_leb128()(implicit ds: DataInputStream) = {
+  def read_unsigned_leb128()(implicit ds: DataInputStream): Int = {
     var result = 0
     var shift = 0
     var stop = false

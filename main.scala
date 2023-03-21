@@ -24,6 +24,7 @@ object Main {
 
       val macho = MachO.parse(ds)
       val sections = macho.segments.flatMap(_.sections)
+      pprintln(sections)
 
       val dwarf = for {
         debug_info <- sections.find(_.sectname == "__debug_info")
