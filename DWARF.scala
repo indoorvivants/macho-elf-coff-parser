@@ -547,4 +547,38 @@ object DWARF {
     )
   }
 
+  object Lines {
+    class Registers private (
+        var address: Long,
+        var op_index: Int,
+        var file: Int,
+        var line: Int,
+        var column: Int,
+        var is_stmt: Boolean,
+        var basic_block: Boolean,
+        var end_sequence: Boolean,
+        var prologue_end: Boolean,
+        var epilogue_begin: Boolean,
+        var isa: Int,
+        var descriminator: Int
+    )
+    object Registers {
+      def apply(default_is_stmt: Boolean) =
+        new Registers(
+          address = 0L,
+          op_index = 0,
+          file = 1,
+          line = 1,
+          column = 0,
+          is_stmt = default_is_stmt,
+          basic_block = false,
+          end_sequence = false,
+          prologue_end = false,
+          epilogue_begin = false,
+          isa = 0,
+          descriminator = 0
+        )
+    }
+  }
+
 }
