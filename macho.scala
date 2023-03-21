@@ -1,5 +1,3 @@
-//> using scala "2.12"
-//> using lib "com.lihaoyi::pprint::0.8.1"
 
 import java.io.DataInputStream
 import Endianness.LITTLE
