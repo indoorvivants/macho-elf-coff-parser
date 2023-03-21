@@ -6,3 +6,9 @@ which would allow us to enrich the exceptions with file name and line number.
 
 It's a Scala CLI project, so you can just do `scala-cli run -- <binary>` and 
 if that binary contains DWARF metadata and if we can parse it - you will see some output.
+
+Contributors:
+
+- DWARF4 format: https://dwarfstd.org/doc/DWARF4.pdf
+- LIEF library - useful for interactively exploring file formats: https://lief-project.github.io/doc/latest/getting_started.html
+- dwex: DWARF explorer GUI: https://github.com/sevaa/dwex
