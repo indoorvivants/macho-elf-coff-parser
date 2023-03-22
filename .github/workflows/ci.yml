@@ -39,7 +39,7 @@ jobs:
       - name: Scala 2.12
         run: scala-cli run -S 2.12 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
       - name: Scala 2.13
-        run: scla-cli run -S 2.13 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
+        run: scala-cli run -S 2.13 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
       - name: Scala 3
         run: scala-cli run -S 3 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
           
