@@ -24,11 +24,12 @@ object DWARF {
       unit_type: UByte,
       debug_abbrev_offset: Long,
       address_size: Long,
-      unit_offset: Long
+      unit_offset: Long,
+      header_offset: Long
   )
   object Header {
     def parse(implicit bf: BinaryFile): Header = {
-
+      val header_offset = bf.position()
       val unit_length_s = uint32()
 
       val (dwarf64, unit_length) = if (unit_length_s == 0xffffffff) {
@@ -39,8 +40,8 @@ object DWARF {
 
       val version = uint16()
       assert(
-        version == 3,
-        s"Expected DWARF version 3 (for Scala Native) , got $version instead"
+        version >= 2 && version <= 5,
+        s"Expected DWARF version 2-5, got $version instead"
       )
 
       def read_ulong: Long =
@@ -68,7 +69,8 @@ object DWARF {
         unit_type = unit_type,
         debug_abbrev_offset = debug_abbrev_offset,
         address_size = address_size.toInt,
-        unit_offset = unit_offset
+        unit_offset = unit_offset,
+        header_offset = header_offset
       )
 
     }
@@ -116,7 +118,7 @@ object DWARF {
             stop = attr.isEmpty
           }
 
-          Some(Abbrev(code, Tag.fromCodeUnsafe(tag), children, attrs.result()))
+          Some(Abbrev(code, Tag.fromCode(tag), children, attrs.result()))
         }
       }
 
@@ -256,6 +258,27 @@ object DWARF {
         case DW_FORM_ref_addr =>
           if (header.is64) uint64()
           else uint32()
+        case DW_FORM_sec_offset =>
+          if (header.is64) uint64()
+          else uint32()
+        case DW_FORM_flag_present =>
+          true
+        case DW_FORM_udata =>
+          read_unsigned_leb128()
+        case DW_FORM_sdata =>
+          read_signed_leb128()
+        case DW_FORM_ref8 =>
+          header.header_offset + uint64()
+        case DW_FORM_ref4 =>
+          header.header_offset + uint32()
+        case DW_FORM_ref2 =>
+          header.header_offset + uint16()
+        case DW_FORM_ref1 =>
+          header.header_offset + uint8()
+        case DW_FORM_exprloc =>
+          val len = read_unsigned_leb128()
+          ds.readNBytes(len)
+
         case DW_FORM_block1 =>
           val len = uint8()
           ds.readNBytes(len)
@@ -274,6 +297,26 @@ object DWARF {
       result |= (byte & 0x7f) << shift
       stop = (byte & 0x80) == 0
       shift += 7
+    }
+
+    result
+  }
+
+  def read_signed_leb128()(implicit ds: BinaryFile): Int = {
+    var result = 0
+    var shift = 0
+    var stop = false
+    val size = 32
+    var byte: Byte = 0
+    while (!stop) {
+      byte = ds.readByte()
+      result |= (byte & 0x7f) << shift
+      stop = (byte & 0x80) == 0
+      shift += 7
+    }
+
+    if ((shift < 32) && ((byte & 0x40) != 0)) {
+      result |= -(1 << shift)
     }
 
     result
@@ -452,7 +495,10 @@ object DWARF {
     )
   }
 
-  sealed abstract class Tag(val code: Int)
+  sealed abstract class Tag(val code: Int) {
+    override def toString(): String =
+      s"[${getClass().getSimpleName().dropRight(1)}:0x${code.toHexString.reverse.padTo(2, '0').reverse}]"
+  }
 
   object Tag {
     case object DW_TAG_array_type extends Tag(0x01)
@@ -496,6 +542,7 @@ object DWARF {
     case object DW_TAG_packed_type extends Tag(0x2d)
     case object DW_TAG_subprogram extends Tag(0x2e)
     case object DW_TAG_template_type_param extends Tag(0x2f)
+    case class Unknown(value: Int) extends Tag(value)
 
     private final val codeMap = Seq(
       DW_TAG_array_type,
@@ -541,11 +588,7 @@ object DWARF {
       DW_TAG_template_type_param
     ).map(t => t.code -> t).toMap
 
-    def fromCode(code: Int): Option[Tag] = codeMap.get(code)
-    def fromCodeUnsafe(code: Int): Tag = codeMap.getOrElse(
-      code,
-      throw new RuntimeException(s"Unknown DWARF tag code: $code")
-    )
+    def fromCode(code: Int): Tag = codeMap.getOrElse(code, Unknown(code))
   }
 
   object Lines {
