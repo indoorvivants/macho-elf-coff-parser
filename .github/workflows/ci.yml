@@ -1,0 +1,48 @@
+name: CI
+on:
+  push:
+    branches: ["main"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["*"]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos-build:
+    name: Mach-O build
+    strategy:
+      fail-fast: false
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+
+      - uses: coursier/cache-action@v6
+
+      - uses: VirtusLab/scala-cli-setup@main
+        with:
+          jvm: temurin:17
+
+      - run: |
+          echo "#include <iostream>
+
+                int howdy_yall(int a) { return a * a; }
+
+                int main() {
+                  std::cout << \"Hello, World!\" << howdy_yall(25) << std::endl;
+                  return 0;
+                }
+                " > test.cpp
+          clang++ -g test.cpp -o test-cpp
+      - name: Scala 2.12
+        run: scala-cli run -S 2.12 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
+      - name: Scala 2.13
+        run: scala-cli run -S 2.13 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
+      - name: Scala 3
+        run: scala-cli run -S 3 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
+          
+

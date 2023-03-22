@@ -2,6 +2,8 @@
 //> using lib "com.lihaoyi::pprint::0.8.1"
 //> using lib "com.indoorvivants.detective::platform::0.0.2"
 
+package scala.scalanative.runtime.dwarf
+
 import java.io.FileInputStream
 import java.io.DataInputStream
 import java.io.File
@@ -9,6 +11,7 @@ import java.io.RandomAccessFile
 import pprint.pprintln
 import java.nio.channels.Channels
 import com.indoorvivants.detective.Platform
+import scala.scalanative.unsigned.UInt
 
 case class Location(low_pc: Long, high_pc: Long, filename: String)
 
@@ -16,13 +19,13 @@ object Main {
   def main(args: Array[String]): Unit = {
     val filename = args.head
     val file = new File(filename)
-    val is = new FileInputStream(file)
-    val ds = new DataInputStream(is)
-    val raf = new RandomAccessFile(filename, "r")
+    implicit val bf: BinaryFile = new BinaryFile(
+      new RandomAccessFile(filename, "r")
+    )
 
     if (Platform.os == Platform.OS.MacOS) {
 
-      val macho = MachO.parse(ds)
+      val macho = MachO.parse(bf)
       val sections = macho.segments.flatMap(_.sections)
       pprintln(sections)
 
@@ -30,17 +33,22 @@ object Main {
         debug_info <- sections.find(_.sectname == "__debug_info")
         debug_abbrev <- sections.find(_.sectname == "__debug_abbrev")
         debug_str <- sections.find(_.sectname == "__debug_str")
+        debug_line <- sections.find(_.sectname == "__debug_line")
 
       } yield {
 
         val (dies, strings) = readDWARF(
-          raf,
           debug_info = DWARF.Section(debug_info.offset, debug_info.size),
           debug_abbrev = DWARF.Section(debug_abbrev.offset, debug_abbrev.size),
           debug_str = DWARF.Section(debug_str.offset, debug_str.size)
         )
 
         pprintln(readLocations(dies, strings).take(5))
+
+        pprintln(
+          DWARF.Lines
+            .parse(DWARF.Section(debug_line.offset, debug_line.size))
+        )
       }
     } else if (Platform.os == Platform.OS.Linux) {
       sys.error(
@@ -55,18 +63,15 @@ object Main {
   }
 
   def readDWARF(
-      raf: RandomAccessFile,
       debug_info: DWARF.Section,
       debug_abbrev: DWARF.Section,
       debug_str: DWARF.Section
-  ) = {
+  )(implicit bf: BinaryFile) = {
     DWARF.parse(
-      raf,
       debug_info = DWARF.Section(debug_info.offset, debug_info.size),
       debug_abbrev = DWARF.Section(debug_abbrev.offset, debug_abbrev.size)
     ) ->
       DWARF.Strings.parse(
-        raf,
         DWARF.Section(debug_str.offset, debug_str.size)
       )
 
@@ -86,7 +91,7 @@ object Main {
           val n = for {
             name <- cu.values
               .find(_._1.at == DWARF.Attribute.DW_AT_name)
-              .map(_._2.asInstanceOf[Int])
+              .map(_._2.asInstanceOf[UInt])
               .map(strings.read)
           } yield name
 
