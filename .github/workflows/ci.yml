@@ -23,7 +23,7 @@ jobs:
 
       - uses: VirtusLab/scala-cli-setup@main
         with:
-          jvm: adopt:17
+          jvm: temurin:17
 
       - run: |
           echo "#include <iostream>
