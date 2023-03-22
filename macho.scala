@@ -1,75 +1,10 @@
+package scala.scalanative.runtime.dwarf
 
-import java.io.DataInputStream
 import Endianness.LITTLE
 import Endianness.BIG
-
-object CommonParsers {
-  val BYTE = 1
-  val INT = 4
-  val LONG = 8
-
-  def uint8()(implicit endi: Endianness, stream: DataInputStream): Byte =
-    stream.readByte()
-
-  def uint16()(implicit endi: Endianness, stream: DataInputStream): Short =
-    endi match {
-      case LITTLE =>
-        val b1 = stream.readByte()
-        val b2 = stream.readByte()
-
-        ((b1 & 0xff) | (b2 & 0xff) << 8).toShort
-      case BIG =>
-        stream.readShort()
-    }
-
-  def uint32()(implicit endi: Endianness, stream: DataInputStream): Int =
-    endi match {
-      case LITTLE =>
-        val b1 = stream.readByte()
-        val b2 = stream.readByte()
-        val b3 = stream.readByte()
-        val b4 = stream.readByte()
-
-        (b1 & 0xff) |
-          (b2 & 0xff) << 8 |
-          (b3 & 0xff) << 16 |
-          (b4 & 0xff) << 24
-      case BIG =>
-        stream.readInt()
-    }
-
-  def uint64()(implicit endi: Endianness, stream: DataInputStream): Long =
-    endi match {
-      case LITTLE =>
-        val b1 = stream.readByte().toLong
-        val b2 = stream.readByte().toLong
-        val b3 = stream.readByte().toLong
-        val b4 = stream.readByte().toLong
-        val b5 = stream.readByte().toLong
-        val b6 = stream.readByte().toLong
-        val b7 = stream.readByte().toLong
-        val b8 = stream.readByte().toLong
-
-        ((b1 & 0xff) |
-          (b2 & 0xff) << 8 |
-          (b3 & 0xff) << 16 |
-          (b4 & 0xff) << 24 |
-          (b5 & 0xff) << 32 |
-          (b6 & 0xff) << 40 |
-          (b7 & 0xff) << 48 |
-          (b8 & 0xff) << 56)
-
-      case BIG =>
-        stream.readLong()
-    }
-
-  def skipBytes(n: Int)(implicit stream: DataInputStream): Unit =
-    stream.readNBytes(n)
-
-  def string(n: Int)(implicit stream: DataInputStream) =
-    new String(stream.readNBytes(n).takeWhile(_ != 0))
-
-}
+import java.io.RandomAccessFile
+import java.nio.channels.Channels
+import scalanative.unsigned._
 
 sealed trait Endianness extends Product with Serializable
 object Endianness {
@@ -84,7 +19,7 @@ case class MachO private (header: Header, segments: List[Segment]) {}
 object MachO {
   import CommonParsers._
 
-  def parse(ds: DataInputStream): MachO = {
+  def parse(ds: BinaryFile): MachO = {
     implicit val stream = ds
     val magic = uint32()(Endianness.BIG, stream)
     val cputype = uint32()(Endianness.BIG, stream)
@@ -104,7 +39,8 @@ object MachO {
 
     val segments = List.newBuilder[Segment]
 
-    (0 until header.ncmds).foreach { cmdId =>
+    // WARNING: Long truncated
+    (0 until header.ncmds.toInt).foreach { cmdId =>
       val commandType = uint32()
       val commandSize = uint32()
       if (commandSize > 0) {
@@ -128,16 +64,16 @@ object MachO {
   final val MH_MAGIC_64 = 0xfeedfacf
   final val MH_CIGAM_64 = 0xcffaedfe
 
-  type vm_prot_t = Int
+  type vm_prot_t = UInt
 
   case class Header(
-      magic: Int,
-      cputype: Int,
-      cpusubtype: Int,
-      filetype: Int,
-      ncmds: Int,
-      sizeofcmds: Int,
-      flags: Int
+      magic: UInt,
+      cputype: UInt,
+      cpusubtype: UInt,
+      filetype: UInt,
+      ncmds: UInt,
+      sizeofcmds: UInt,
+      flags: UInt
   ) {
     override def toString() =
       s"""
@@ -160,12 +96,12 @@ object MachO {
       filesize: Long,
       maxprot: vm_prot_t,
       initprot: vm_prot_t,
-      nsects: Int,
-      flags: Int,
+      nsects: UInt,
+      flags: UInt,
       sections: List[Section]
   )
   object Segment {
-    def parse()(implicit endi: Endianness, ds: DataInputStream): Segment = {
+    def parse()(implicit endi: Endianness, ds: BinaryFile): Segment = {
       val init = Segment(
         segname = string(16),
         vmaddr = uint64(),
@@ -179,7 +115,7 @@ object MachO {
         sections = Nil
       )
 
-      init.copy(sections = List.fill(init.nsects)(Section.parse()))
+      init.copy(sections = List.fill(init.nsects.toInt)(Section.parse()))
     }
   }
 
@@ -188,15 +124,15 @@ object MachO {
       segname: String,
       addr: Long,
       size: Long,
-      offset: Int,
-      align: Int,
-      reloff: Int,
-      nreloc: Int,
-      flags: Int
+      offset: UInt,
+      align: UInt,
+      reloff: UInt,
+      nreloc: UInt,
+      flags: UInt
   )
 
   object Section {
-    def parse()(implicit endi: Endianness, ds: DataInputStream): Section = {
+    def parse()(implicit endi: Endianness, ds: BinaryFile): Section = {
       val sect = Section(
         sectname = string(16),
         segname = string(16),

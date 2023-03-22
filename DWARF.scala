@@ -1,9 +1,11 @@
-import java.io.DataInputStream
-import java.io.RandomAccessFile
+package scala.scalanative.runtime.dwarf
+
 import java.nio.channels.Channels
 import scala.collection.immutable.IntMap
 import DWARF.Form.DW_FORM_strp
 import java.nio.channels.FileChannel
+
+import scalanative.unsigned._
 
 object DWARF {
   implicit val endi: Endianness = Endianness.LITTLE
@@ -19,13 +21,13 @@ object DWARF {
       version: Int,
       is64: Boolean,
       unit_length: Long,
-      unit_type: Byte,
+      unit_type: UByte,
       debug_abbrev_offset: Long,
       address_size: Long,
       unit_offset: Long
   )
   object Header {
-    def parse(raf: RandomAccessFile)(implicit ds: DataInputStream): Header = {
+    def parse(implicit bf: BinaryFile): Header = {
 
       val unit_length_s = uint32()
 
@@ -33,7 +35,7 @@ object DWARF {
         (true, uint64())
       } else (false, unit_length_s.toLong)
 
-      val unit_offset = raf.getChannel().position()
+      val unit_offset = bf.position()
 
       val version = uint16()
       assert(
@@ -44,7 +46,7 @@ object DWARF {
       def read_ulong: Long =
         if (dwarf64) uint64() else uint32()
 
-      val (unit_type: Byte, address_size, debug_abbrev_offset) =
+      val (unit_type, address_size, debug_abbrev_offset) =
         if (version >= 5) {
           (
             uint8(),
@@ -54,7 +56,7 @@ object DWARF {
         } else {
           val dao = read_ulong
           (
-            0.toByte,
+            0,
             uint8(),
             dao
           )
@@ -81,7 +83,7 @@ object DWARF {
   case class Attr(at: Attribute, form: Form, value: Int)
 
   object Abbrev {
-    def parse(implicit ds: DataInputStream): Vector[Abbrev] = {
+    def parse(implicit ds: BinaryFile): Vector[Abbrev] = {
       def readAttribute: Option[Attr] = {
         val at = read_unsigned_leb128()
         val form = read_unsigned_leb128()
@@ -132,39 +134,40 @@ object DWARF {
   }
 
   case class CompileUnit(abbrev: Option[Abbrev], values: Map[Attr, Any])
-  case class Section(offset: Int, size: Long)
+  case class Section(offset: UInt, size: Long)
   case class Strings(buf: Array[Byte]) {
-    def read(at: Int): String = {
-      assert(at < buf.length)
-      val until = buf.indexWhere(_ == 0, at)
+    def read(at: UInt): String = {
 
-      new String(buf.slice(at, until))
+      // WARNING: lots of precision loss
+      assert(at < buf.length)
+      val until = buf.indexWhere(_ == 0, at.toInt)
+
+      new String(buf.slice(at.toInt, until))
     }
   }
   object Strings {
-    def parse(raf: RandomAccessFile, debug_str: Section): Strings = {
-      val pos = raf.getChannel().position()
-      raf.seek(debug_str.offset)
+    def parse(debug_str: Section)(implicit bf: BinaryFile): Strings = {
+      val pos = bf.position()
+      bf.seek(debug_str.offset)
 
       val buf = Array.ofDim[Byte](debug_str.size.toInt)
-      raf.readFully(buf)
-      raf.seek(pos)
+      bf.readFully(buf)
+      bf.seek(pos)
 
       Strings(buf)
     }
   }
 
   def parse(
-      raf: RandomAccessFile,
       debug_info: Section,
       debug_abbrev: Section
-  ): Vector[DIE] = {
-    raf.seek(debug_info.offset)
+  )(implicit bf: BinaryFile): Vector[DIE] = {
+    bf.seek(debug_info.offset)
     val end_offset = debug_info.offset + debug_info.size
-    def stop = raf.getChannel().position() >= end_offset
+    def stop = bf.position() >= end_offset
     val dies = Vector.newBuilder[DIE]
     while (!stop) {
-      val die = DIE.parse(raf, debug_info, debug_abbrev)
+      val die = DIE.parse(debug_info, debug_abbrev)
 
       dies += die
 
@@ -175,39 +178,34 @@ object DWARF {
 
   object DIE {
     def parse(
-        raf: RandomAccessFile,
         debug_info: Section,
         debug_abbrev: Section
-    ) = {
+    )(implicit bf: BinaryFile) = {
 
-      val channel = raf.getChannel()
-      implicit val ds =
-        new DataInputStream(Channels.newInputStream(channel))
-      val header = Header.parse(raf)
-      val pos = channel.position()
+      val header = Header.parse(bf)
+      val pos = bf.position()
 
-      raf.seek(debug_abbrev.offset + header.debug_abbrev_offset)
-      val abbrev = Abbrev.parse(ds)
+      bf.seek(debug_abbrev.offset + header.debug_abbrev_offset)
+      val abbrev = Abbrev.parse(bf)
       val idx = IntMap(abbrev.map(a => a.code -> a): _*)
 
-      raf.seek(pos)
+      bf.seek(pos)
 
-      val units = readUnits(channel, header.unit_offset, header, idx)
+      val units = readUnits(header.unit_offset, header, idx)
 
       DIE(header, abbrev, units)
     }
   }
 
   def readUnits(
-      channel: FileChannel,
       offset: Long,
       header: Header,
       idx: IntMap[Abbrev]
-  )(implicit ds: DataInputStream): Vector[CompileUnit] = {
+  )(implicit ds: BinaryFile): Vector[CompileUnit] = {
 
     val end_offset = offset + header.unit_length
 
-    def stop = channel.position() >= end_offset
+    def stop = ds.position() >= end_offset
     val units = Vector.newBuilder[CompileUnit]
 
     while (!stop) {
@@ -220,7 +218,7 @@ object DWARF {
         case s @ Some(abbrev) =>
           abbrev.attributes.foreach { attr =>
             val value = AttributeValue.parse(header, attr.form)
-            val pos = channel.position()
+            val pos = ds.position()
             attrs += (attr -> value)
           }
 
@@ -232,7 +230,7 @@ object DWARF {
   }
 
   object AttributeValue {
-    def parse(header: Header, form: Form)(implicit ds: DataInputStream): Any = {
+    def parse(header: Header, form: Form)(implicit ds: BinaryFile): Any = {
       import Form._
       form match {
         case DW_FORM_strp =>
@@ -249,7 +247,10 @@ object DWARF {
             uint32()
           else if (header.address_size == 8)
             uint64()
-          else throw new RuntimeException(s"Uknown header size: ${header.address_size}")
+          else
+            throw new RuntimeException(
+              s"Uknown header size: ${header.address_size}"
+            )
         case DW_FORM_flag =>
           uint8() == 1
         case DW_FORM_ref_addr =>
@@ -264,7 +265,7 @@ object DWARF {
     }
   }
 
-  def read_unsigned_leb128()(implicit ds: DataInputStream): Int = {
+  def read_unsigned_leb128()(implicit ds: BinaryFile): Int = {
     var result = 0
     var shift = 0
     var stop = false
@@ -548,6 +549,46 @@ object DWARF {
   }
 
   object Lines {
+
+    def parse(section: Section)(implicit bf: BinaryFile) = {
+      bf.seek(section.offset)
+      val header = Header.parse()
+      println(header)
+    }
+    case class Header(
+        unit_length: Int,
+        version: Short,
+        header_length: Int,
+        minimum_instruction_length: Byte,
+        maximum_operations_per_instruction: Byte,
+        default_is_stmt: Byte,
+        line_base: Byte,
+        line_range: Byte,
+        opcode_base: Byte,
+        standard_opcode_lengths: Array[Byte],
+        include_directories: Seq[String],
+        file_names: Seq[String]
+    )
+    object Header {
+      def parse()(implicit ds: BinaryFile) = {
+        val unit_length = uint32()
+        val version = uint16()
+        val header_length = uint32()
+        val minimum_instruction_length = uint8()
+        val maximum_operations_per_instruction = uint8()
+        val default_is_stmt = uint8() == 1
+        val line_base = uint8()
+        val line_range = uint8()
+        val opcode_base = uint8()
+
+        pprint.log(
+          s"$unit_length, $version, $header_length, " +
+            s"$minimum_instruction_length, $maximum_operations_per_instruction, " +
+            s"$default_is_stmt, $line_base, $line_range,$opcode_base"
+        )
+
+      }
+    }
     class Registers private (
         var address: Long,
         var op_index: Int,
