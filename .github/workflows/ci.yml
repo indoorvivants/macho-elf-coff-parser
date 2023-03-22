@@ -21,10 +21,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-java@v3
+      - uses: VirtusLab/scala-cli-setup@main
         with:
-          distribution: 'temurin' 
-          java-version: '17'
+          jvm: adopt:17
 
       - run: |
           echo "#include <iostream>
@@ -38,10 +37,10 @@ jobs:
                 " > test.cpp
           clang++ -g test.cpp -o test-cpp
       - name: Scala 2.12
-        run: scli run -S 2.12 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
+        run: scala-cli run -S 2.12 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
       - name: Scala 2.13
-        run: scli run -S 2.13 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
+        run: scla-cli run -S 2.13 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
       - name: Scala 3
-        run: scli run -S 3 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
+        run: scala-cli run -S 3 . -- test-cpp.dSYM/Contents/Resources/DWARF/test-cpp
           
 
