@@ -6,6 +6,8 @@ import DWARF.Form.DW_FORM_strp
 import java.nio.channels.FileChannel
 
 import scalanative.unsigned._
+import scala.collection.mutable.Builder
+import java.nio.ByteBuffer
 
 object DWARF {
   implicit val endi: Endianness = Endianness.LITTLE
@@ -596,25 +598,67 @@ object DWARF {
     def parse(section: Section)(implicit bf: BinaryFile) = {
       bf.seek(section.offset)
       val header = Header.parse()
-      println(header)
+      val stdOpcodeLengths = header.standard_opcode_lengths
+      pprint.pprintln(header)
+
+      def readOpcode() = {
+        val firstByte = uint8()
+        if (firstByte == 0) {
+          // extended
+          val length = read_unsigned_leb128()
+          val code = ExtendedOpcode.fromCode(uint8())
+          val bytes = readBytes(length)
+
+          pprint.log(s"Extended: $length, $code, ${bytes.toList}")
+
+        } else {
+          StandardOpcode.fromCode(firstByte) match {
+            case None => 
+              pprint.log(s"Special: $firstByte")
+            case Some(value) =>
+              val length = stdOpcodeLengths(value.code - 1)
+              val bytes = readBytes(length)
+              pprint.log(s"Standard: $length, $value, ${bytes.toList}")
+          }
+        }
+      }
+
+      val endPosition = header.offset + header.unit_length
+
+      def stop = bf.position() >= endPosition
+
+      while(!stop) {
+
+      readOpcode()
+      }
+
     }
     case class Header(
-        unit_length: Int,
-        version: Short,
-        header_length: Int,
-        minimum_instruction_length: Byte,
-        maximum_operations_per_instruction: Byte,
-        default_is_stmt: Byte,
-        line_base: Byte,
-        line_range: Byte,
-        opcode_base: Byte,
+        unit_length: UInt,
+        offset: Long,
+        version: UShort,
+        header_length: UInt,
+        minimum_instruction_length: UByte,
+        maximum_operations_per_instruction: UByte,
+        default_is_stmt: Boolean,
+        line_base: UByte,
+        line_range: UByte,
+        opcode_base: UByte,
         standard_opcode_lengths: Array[Byte],
         include_directories: Seq[String],
-        file_names: Seq[String]
+        file_names: Seq[Filename]
+    )
+
+    case class Filename(
+        name: String,
+        directoryIndex: UInt,
+        lastModified: UInt,
+        fileLength: UInt
     )
     object Header {
-      def parse()(implicit ds: BinaryFile) = {
+      def parse()(implicit ds: BinaryFile): Header = {
         val unit_length = uint32()
+        val offset = ds.position()
         val version = uint16()
         val header_length = uint32()
         val minimum_instruction_length = uint8()
@@ -623,14 +667,80 @@ object DWARF {
         val line_base = uint8()
         val line_range = uint8()
         val opcode_base = uint8()
+        val standard_opcode_lengths =
+          if (opcode_base == 0) Array.emptyByteArray
+          else readBytes(opcode_base.toInt - 1)
 
-        pprint.log(
-          s"$unit_length, $version, $header_length, " +
-            s"$minimum_instruction_length, $maximum_operations_per_instruction, " +
-            s"$default_is_stmt, $line_base, $line_range,$opcode_base"
+        val include_directories = readDirectories()
+        val file_names = readFilenames()
+
+        Header(
+          unit_length = unit_length,
+          offset = offset,
+          version = version,
+          header_length = header_length,
+          minimum_instruction_length = minimum_instruction_length,
+          maximum_operations_per_instruction =
+            maximum_operations_per_instruction,
+          default_is_stmt = default_is_stmt,
+          line_base = line_base,
+          line_range = line_range,
+          opcode_base = opcode_base,
+          standard_opcode_lengths = standard_opcode_lengths,
+          include_directories = include_directories,
+          file_names = file_names
         )
 
       }
+
+      private def readDirectories()(implicit ds: BinaryFile) = {
+        val builder = Vector.newBuilder[String]
+        var stopAll = false
+        val str = Array.newBuilder[Byte]
+        while (!stopAll) {
+          var stopString = false
+          str.clear()
+          while (!stopString) {
+            val nextByte = ds.readByte()
+            stopString = nextByte == 0
+            if (!stopString) str += nextByte
+          }
+
+          val collected = new String(str.result())
+          stopAll = collected.length == 0
+          if (!stopAll) builder += collected
+        }
+        builder.result()
+      }
+
+      private def readFilenames()(implicit ds: BinaryFile) = {
+        val builder = Vector.newBuilder[Filename]
+        var stopAll = false
+        val str = Array.newBuilder[Byte]
+        while (!stopAll) {
+          var stopString = false
+          str.clear()
+          while (!stopString) {
+            val nextByte = ds.readByte()
+            stopString = nextByte == 0
+            if (!stopString) str += nextByte
+          }
+
+          val collected = new String(str.result())
+          stopAll = collected.length == 0
+          if (!stopAll) {
+
+            builder += Filename(
+              collected,
+              directoryIndex = read_unsigned_leb128(),
+              lastModified = read_unsigned_leb128(),
+              fileLength = read_unsigned_leb128()
+            )
+          }
+        }
+        builder.result()
+      }
+
     }
     class Registers private (
         var address: Long,
@@ -663,6 +773,69 @@ object DWARF {
           descriminator = 0
         )
     }
-  }
 
+    sealed abstract class StandardOpcode(val code: Int)
+        extends Product
+        with Serializable {
+      override def toString(): String =
+        s"[${getClass().getSimpleName().dropRight(1)}:0x${code.toHexString.reverse.padTo(2, '0').reverse}]"
+    }
+
+    object StandardOpcode {
+      case object DW_LNS_copy extends StandardOpcode(0x01)
+      case object DW_LNS_advance_pc extends StandardOpcode(0x02)
+      case object DW_LNS_advance_line extends StandardOpcode(0x03)
+      case object DW_LNS_set_file extends StandardOpcode(0x04)
+      case object DW_LNS_set_column extends StandardOpcode(0x05)
+      case object DW_LNS_negate_stmt extends StandardOpcode(0x06)
+      case object DW_LNS_set_basic_block extends StandardOpcode(0x07)
+      case object DW_LNS_const_add_pc extends StandardOpcode(0x08)
+      case object DW_LNS_fixed_advance_pc extends StandardOpcode(0x09)
+      case object DW_LNS_set_prologue_end extends StandardOpcode(0x0a)
+      case object DW_LNS_set_epilogue_begin extends StandardOpcode(0x0b)
+      case object DW_LNS_set_isa extends StandardOpcode(0x0c)
+
+      private val lookup = List(
+        DW_LNS_copy,
+        DW_LNS_advance_pc,
+        DW_LNS_advance_line,
+        DW_LNS_set_file,
+        DW_LNS_set_column,
+        DW_LNS_negate_stmt,
+        DW_LNS_set_basic_block,
+        DW_LNS_const_add_pc,
+        DW_LNS_fixed_advance_pc,
+        DW_LNS_set_prologue_end
+      ).map(r => r.code -> r).toMap
+
+      def fromCode(code: Int): Option[StandardOpcode] = lookup.get(code)
+    }
+
+    sealed abstract class ExtendedOpcode(val code: Int)
+        extends Product
+        with Serializable {
+      override def toString(): String =
+        s"[${getClass().getSimpleName().dropRight(1)}:0x${code.toHexString.reverse.padTo(2, '0').reverse}]"
+    }
+
+    object ExtendedOpcode {
+      case object DW_LNE_end_sequence extends ExtendedOpcode(0x01)
+      case object DW_LNE_set_address extends ExtendedOpcode(0x02)
+      case object DW_LNE_define_file extends ExtendedOpcode(0x03)
+      case object DW_LNE_set_discriminator extends ExtendedOpcode(0x04)
+      case object DW_LNE_lo_user extends ExtendedOpcode(0x80)
+      case object DW_LNE_hi_user extends ExtendedOpcode(0xff)
+
+      private val lookup = List(
+        DW_LNE_end_sequence,
+        DW_LNE_set_address,
+        DW_LNE_define_file,
+        DW_LNE_set_discriminator,
+        DW_LNE_lo_user,
+        DW_LNE_hi_user
+      ).map(r => r.code -> r).toMap
+
+      def fromCode(code: Int): Option[ExtendedOpcode] = lookup.get(code)
+    }
+  }
 }

@@ -71,6 +71,9 @@ object CommonParsers {
   def skipBytes(n: Long)(implicit stream: BinaryFile): Unit =
     stream.skipNBytes(n)
 
+  def readBytes(n: Int)(implicit stream: BinaryFile): Array[Byte] =
+    stream.readNBytes(n)
+
   def string(n: Int)(implicit stream: BinaryFile) =
     new String(stream.readNBytes(n).takeWhile(_ != 0))
 

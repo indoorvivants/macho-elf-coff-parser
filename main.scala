@@ -42,8 +42,10 @@ object Main {
           debug_abbrev = DWARF.Section(debug_abbrev.offset, debug_abbrev.size),
           debug_str = DWARF.Section(debug_str.offset, debug_str.size)
         )
+        // pprintln(dies)
 
-        pprintln(readLocations(dies, strings).take(5))
+        // pprintln(readLocations(dies, strings).take(5))
+
 
         pprintln(
           DWARF.Lines
