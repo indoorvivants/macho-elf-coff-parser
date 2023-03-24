@@ -15,10 +15,19 @@ import scala.scalanative.unsigned.UInt
 
 case class Location(low_pc: Long, high_pc: Long, filename: String)
 
+case class Metadata(
+    lines: DWARF.Lines.Matrix
+)
+
 object Main {
   def main(args: Array[String]): Unit = {
     val filename = args.head
-    val file = new File(filename)
+
+    pprintln(readMetadata(filename).lines.find(0x10006c4b4L))
+  }
+
+  def readMetadata(filename: String): Metadata = {
+
     implicit val bf: BinaryFile = new BinaryFile(
       new RandomAccessFile(filename, "r")
     )
@@ -45,13 +54,18 @@ object Main {
         val lines = DWARF.Lines
           .parse(DWARF.Section(debug_line.offset, debug_line.size))
 
-        pprintln(lines.files, width = 300, height = Int.MaxValue)
+        // pprintln(lines.files, width = 300, height = Int.MaxValue)
 
-        pprintln(
-          lines.find(0x10008a398L)
-        )
+        // pprintln(
+        //   lines.find(0x10008a398L)
+        // )
+
+        Metadata(lines)
       }
+
+      dwarf.get
     } else if (Platform.os == Platform.OS.Linux) {
+
       sys.error(
         "Linux is not supported yet, will someone please write an ELF parser"
       )
@@ -59,7 +73,7 @@ object Main {
       sys.error(
         "Windows is not supported yet, will someone please write a COFF parser, or whatever windows uses"
       )
-    }
+    } else ???
 
   }
 

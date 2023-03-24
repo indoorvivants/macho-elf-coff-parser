@@ -669,22 +669,28 @@ object DWARF {
           addFile: Filename => Unit
       ) = {
         def sendIt =
-          add(
-            Row(
-              file = state.file,
-              address = state.address,
-              line = state.line,
-              is_stmt = state.is_stmt
+          if (state.line > 0 && state.column > 0)
+            add(
+              Row(
+                file = state.file,
+                address = state.address,
+                line = state.line,
+                is_stmt = state.is_stmt
+              )
             )
-          )
 
         def advanceAddress(operation_advance: Int) = {
 
-          val new_address =
-            state.address + header.minimum_instruction_length * ((state.op_index + operation_advance) / header.maximum_operations_per_instruction)
           val new_op_index =
             (state.op_index + operation_advance) % header.maximum_operations_per_instruction
-          state.address = new_address
+
+          state.address += {
+            if (header.version < 4)
+              header.minimum_instruction_length * operation_advance
+            else
+              header.minimum_instruction_length * ((state.op_index + operation_advance) / header.maximum_operations_per_instruction)
+          }
+
           state.op_index = new_op_index
         }
 
@@ -705,7 +711,7 @@ object DWARF {
 
           code match {
             case None =>
-              println("what?")
+              throw new RuntimeException(s"Unknown enhanced opcode $ucode")
             case Some(value) =>
               import ExtendedOpcode._
               value match {
@@ -717,6 +723,7 @@ object DWARF {
                 case DW_LNE_set_address =>
                   // TODO: handle 32bit machines
                   state.address = uint64()
+                  state.op_index = 0
                 // println(s"Setting address to 0x${state.address.toHexString}")
                 case DW_LNE_define_file =>
                   val filenameA = Array.newBuilder[Byte]
@@ -737,24 +744,27 @@ object DWARF {
 
           }
 
+        } else if (opcode >= header.opcode_base) {
+          val adjusted_opcode = opcode - header.opcode_base
+          val line_increment =
+            header.line_base + (adjusted_opcode % header.line_range)
+          advanceAddressByOpcode(opcode)
+
+          // println(
+          //   s"Special $opcode, adjusted_opcode: $adjusted_opcode, line_increment: $line_increment"
+          // )
+          state.basic_block = false
+          state.prologue_end = false
+          state.epilogue_begin = false
+          state.descriminator = 0
+          state.line = state.line + line_increment
+
+          sendIt
+
         } else {
           StandardOpcode.fromCode(opcode) match {
             case None =>
-              val adjusted_opcode = opcode - header.opcode_base
-              val line_increment =
-                header.line_base + (adjusted_opcode % header.line_range)
-              advanceAddressByOpcode(opcode)
-
-              // println(
-              //   s"Special $opcode, adjusted_opcode: $adjusted_opcode, line_increment: $line_increment"
-              // )
-              state.basic_block = false
-              state.prologue_end = false
-              state.epilogue_begin = false
-              state.descriminator = 0
-              state.line = state.line + line_increment
-
-              sendIt
+              throw new RuntimeException(s"Unknown standard opcode $opcode")
 
             case Some(value) =>
               // pprint.log(s"Standard: $value")
