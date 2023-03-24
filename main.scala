@@ -41,13 +41,14 @@ object Main {
           debug_abbrev = DWARF.Section(debug_abbrev.offset, debug_abbrev.size),
           debug_str = DWARF.Section(debug_str.offset, debug_str.size)
         )
-        // pprintln(dies)
 
-        // pprintln(readLocations(dies, strings).take(5))
+        val lines = DWARF.Lines
+          .parse(DWARF.Section(debug_line.offset, debug_line.size))
+
+        pprintln(lines.files, width = 300, height = Int.MaxValue)
 
         pprintln(
-          DWARF.Lines
-            .parse(DWARF.Section(debug_line.offset, debug_line.size)).files.values.map(_.name)
+          lines.find(0x10008a398L)
         )
       }
     } else if (Platform.os == Platform.OS.Linux) {

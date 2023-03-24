@@ -602,7 +602,36 @@ object DWARF {
 
     case class LineProgram(header: Header, rows: Vector[Row])
 
-    case class Matrix(files: Map[Int, Filename], rows: Vector[Vector[Row]])
+    case class Matrix(files: Map[Int, Filename], matrix: Vector[Vector[Row]]) {
+      def find(address: Long) = {
+        matrix
+          .collectFirst {
+            // if(rows.isEmpty) false
+            case rows
+                if rows.headOption.exists(
+                  _.address <= address
+                ) && rows.lastOption
+                  .exists(_.address >= address) =>
+              var result = Option.empty[Row]
+
+              rows.zipWithIndex.foreach { case (row, idx) =>
+                if (result.isEmpty) {
+                  if (row.address == address) result = Some(row)
+                  else if (idx != 0 && address < row.address) {
+                    result = Some(rows(idx - 1))
+                  }
+                }
+              }
+
+              result
+
+          }
+          .flatten
+          .map { r =>
+            r -> files.get(r.file)
+          }
+      }
+    }
 
     def parse(section: Section)(implicit bf: BinaryFile): Matrix = {
       bf.seek(section.offset)
@@ -702,8 +731,6 @@ object DWARF {
                   val lastModified = read_unsigned_leb128()
                   val length = read_unsigned_leb128()
 
-                  println(filename)
-
                 case DW_LNE_set_discriminator =>
                   state.descriminator = read_unsigned_leb128()
               }
@@ -780,8 +807,6 @@ object DWARF {
       while (!stop) {
         readOpcode(registers, rows += _, files += _)
       }
-
-      println(files.result())
 
       LineProgram(header, rows.result())
 
