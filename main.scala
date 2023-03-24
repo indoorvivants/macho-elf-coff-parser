@@ -27,7 +27,6 @@ object Main {
 
       val macho = MachO.parse(bf)
       val sections = macho.segments.flatMap(_.sections)
-      pprintln(sections)
 
       val dwarf = for {
         debug_info <- sections.find(_.sectname == "__debug_info")
@@ -46,10 +45,9 @@ object Main {
 
         // pprintln(readLocations(dies, strings).take(5))
 
-
         pprintln(
           DWARF.Lines
-            .parse(DWARF.Section(debug_line.offset, debug_line.size))
+            .parse(DWARF.Section(debug_line.offset, debug_line.size)).files.values.map(_.name)
         )
       }
     } else if (Platform.os == Platform.OS.Linux) {

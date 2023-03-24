@@ -30,10 +30,10 @@ object CommonParsers {
   def uint32()(implicit endi: Endianness, stream: BinaryFile): UInt =
     endi match {
       case LITTLE =>
-        val b1 = stream.readUnsignedByte().toLong
-        val b2 = stream.readUnsignedByte().toLong
-        val b3 = stream.readUnsignedByte().toLong
-        val b4 = stream.readUnsignedByte().toLong
+        val b1 = stream.readByte().toLong
+        val b2 = stream.readByte().toLong
+        val b3 = stream.readByte().toLong
+        val b4 = stream.readByte().toLong
 
         (b1 & 0xff) |
           (b2 & 0xff) << 8 |
@@ -46,14 +46,14 @@ object CommonParsers {
   def uint64()(implicit endi: Endianness, stream: BinaryFile): Long =
     endi match {
       case LITTLE =>
-        val b1 = stream.readUnsignedByte().toLong
-        val b2 = stream.readUnsignedByte().toLong
-        val b3 = stream.readUnsignedByte().toLong
-        val b4 = stream.readUnsignedByte().toLong
-        val b5 = stream.readUnsignedByte().toLong
-        val b6 = stream.readUnsignedByte().toLong
-        val b7 = stream.readUnsignedByte().toLong
-        val b8 = stream.readUnsignedByte().toLong
+        val b1 = stream.readByte().toLong
+        val b2 = stream.readByte().toLong
+        val b3 = stream.readByte().toLong
+        val b4 = stream.readByte().toLong
+        val b5 = stream.readByte().toLong
+        val b6 = stream.readByte().toLong
+        val b7 = stream.readByte().toLong
+        val b8 = stream.readByte().toLong
 
         ((b1 & 0xff) |
           (b2 & 0xff) << 8 |

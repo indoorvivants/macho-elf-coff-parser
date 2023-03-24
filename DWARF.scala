@@ -595,30 +595,176 @@ object DWARF {
 
   object Lines {
 
-    def parse(section: Section)(implicit bf: BinaryFile) = {
+    case class Row(file: Int, address: Long, line: Int, is_stmt: Boolean) {
+      override def toString() =
+        s"Row[file=$file, 0x${address.toHexString}, line=$line, stmt=$is_stmt]"
+    }
+
+    case class LineProgram(header: Header, rows: Vector[Row])
+
+    case class Matrix(files: Map[Int, Filename], rows: Vector[Vector[Row]])
+
+    def parse(section: Section)(implicit bf: BinaryFile): Matrix = {
       bf.seek(section.offset)
+
+      def stop = bf.position() >= section.offset + section.size
+      val fileIndices = collection.mutable.Map.empty[Filename, Int]
+      val mtr = Vector.newBuilder[Vector[Row]]
+      while (!stop) {
+        val prog = readLineProgram()
+
+        if (prog.header.file_names.nonEmpty) {
+
+          val indices = prog.header.file_names.map(f =>
+            fileIndices.getOrElseUpdate(f, fileIndices.size)
+          )
+
+          val newRows = prog.rows.map { row =>
+            row.copy(file = indices(row.file - 1))
+          }
+
+          mtr += newRows
+        }
+
+      }
+
+      Matrix(fileIndices.map(_.swap).toMap, mtr.result())
+    }
+    def readLineProgram()(implicit bf: BinaryFile) = {
       val header = Header.parse()
       val stdOpcodeLengths = header.standard_opcode_lengths
-      pprint.pprintln(header)
 
-      def readOpcode() = {
-        val firstByte = uint8()
-        if (firstByte == 0) {
+      def readOpcode(
+          state: Registers,
+          add: Row => Unit,
+          addFile: Filename => Unit
+      ) = {
+        def sendIt =
+          add(
+            Row(
+              file = state.file,
+              address = state.address,
+              line = state.line,
+              is_stmt = state.is_stmt
+            )
+          )
+
+        def advanceAddress(operation_advance: Int) = {
+
+          val new_address =
+            state.address + header.minimum_instruction_length * ((state.op_index + operation_advance) / header.maximum_operations_per_instruction)
+          val new_op_index =
+            (state.op_index + operation_advance) % header.maximum_operations_per_instruction
+          state.address = new_address
+          state.op_index = new_op_index
+        }
+
+        def advanceAddressByOpcode(opcode: UByte) = {
+          val adjusted_opcode = opcode - header.opcode_base
+          val operation_advance = adjusted_opcode / header.line_range
+          advanceAddress(operation_advance)
+        }
+
+        val opcode: UByte = uint8()
+        if (opcode == 0) {
           // extended
           val length = read_unsigned_leb128()
-          val code = ExtendedOpcode.fromCode(uint8())
-          val bytes = readBytes(length)
+          val ucode = uint8()
+          val code = ExtendedOpcode.fromCode(ucode)
 
-          pprint.log(s"Extended: $length, $code, ${bytes.toList}")
+          // println(s"Extended: $length, $code, 0x${ucode.toHexString}")
+
+          code match {
+            case None =>
+              println("what?")
+            case Some(value) =>
+              import ExtendedOpcode._
+              value match {
+                case DW_LNE_end_sequence =>
+                  state.end_sequence = true
+                  // println(s"Sending address 0x${state.address.toHexString}")
+                  sendIt
+                  state.reset(header.default_is_stmt)
+                case DW_LNE_set_address =>
+                  // TODO: handle 32bit machines
+                  state.address = uint64()
+                // println(s"Setting address to 0x${state.address.toHexString}")
+                case DW_LNE_define_file =>
+                  val filenameA = Array.newBuilder[Byte]
+                  var stop = false
+                  while (!stop) {
+                    val byte = bf.readByte()
+                    stop = byte == 0
+                    if (!stop) filenameA += byte
+                  }
+                  val filename = new String(filenameA.result())
+                  val dirIndex = read_unsigned_leb128()
+                  val lastModified = read_unsigned_leb128()
+                  val length = read_unsigned_leb128()
+
+                  println(filename)
+
+                case DW_LNE_set_discriminator =>
+                  state.descriminator = read_unsigned_leb128()
+              }
+
+          }
 
         } else {
-          StandardOpcode.fromCode(firstByte) match {
-            case None => 
-              pprint.log(s"Special: $firstByte")
+          StandardOpcode.fromCode(opcode) match {
+            case None =>
+              val adjusted_opcode = opcode - header.opcode_base
+              val line_increment =
+                header.line_base + (adjusted_opcode % header.line_range)
+              advanceAddressByOpcode(opcode)
+
+              // println(
+              //   s"Special $opcode, adjusted_opcode: $adjusted_opcode, line_increment: $line_increment"
+              // )
+              state.basic_block = false
+              state.prologue_end = false
+              state.epilogue_begin = false
+              state.descriminator = 0
+              state.line = state.line + line_increment
+
+              sendIt
+
             case Some(value) =>
-              val length = stdOpcodeLengths(value.code - 1)
-              val bytes = readBytes(length)
-              pprint.log(s"Standard: $length, $value, ${bytes.toList}")
+              // pprint.log(s"Standard: $value")
+              import StandardOpcode._
+              value match {
+                case DW_LNS_copy =>
+                  sendIt
+                  state.basic_block = false
+                  state.prologue_end = false
+                  state.epilogue_begin = false
+                  state.descriminator = 0
+                case DW_LNS_advance_pc =>
+                  advanceAddress(read_unsigned_leb128())
+
+                case DW_LNS_advance_line =>
+                  state.line = state.line + read_signed_leb128()
+
+                case DW_LNS_set_file =>
+                  state.file = read_unsigned_leb128()
+                case DW_LNS_set_column =>
+                  state.column = read_unsigned_leb128()
+                case DW_LNS_negate_stmt =>
+                  state.is_stmt = !state.is_stmt
+                case DW_LNS_set_basic_block =>
+                  state.basic_block = true
+                case DW_LNS_const_add_pc =>
+                  advanceAddressByOpcode(255)
+                case DW_LNS_fixed_advance_pc =>
+                  state.address = state.address + uint16()
+                  state.op_index = 0
+                case DW_LNS_set_prologue_end =>
+                  state.prologue_end = true
+                case DW_LNS_set_epilogue_begin =>
+                  state.epilogue_begin = true
+                case DW_LNS_set_isa =>
+                  state.isa = read_unsigned_leb128()
+              }
           }
         }
       }
@@ -627,10 +773,17 @@ object DWARF {
 
       def stop = bf.position() >= endPosition
 
-      while(!stop) {
+      val registers = Registers(header.default_is_stmt)
+      val rows = Vector.newBuilder[Row]
+      val files = Vector.newBuilder[Filename]
 
-      readOpcode()
+      while (!stop) {
+        readOpcode(registers, rows += _, files += _)
       }
+
+      println(files.result())
+
+      LineProgram(header, rows.result())
 
     }
     case class Header(
@@ -641,7 +794,7 @@ object DWARF {
         minimum_instruction_length: UByte,
         maximum_operations_per_instruction: UByte,
         default_is_stmt: Boolean,
-        line_base: UByte,
+        line_base: Byte,
         line_range: UByte,
         opcode_base: UByte,
         standard_opcode_lengths: Array[Byte],
@@ -662,14 +815,14 @@ object DWARF {
         val version = uint16()
         val header_length = uint32()
         val minimum_instruction_length = uint8()
-        val maximum_operations_per_instruction = uint8()
+        val maximum_operations_per_instruction =
+          if (version >= 4) uint8() else 1
         val default_is_stmt = uint8() == 1
-        val line_base = uint8()
+        val line_base = ds.readByte()
         val line_range = uint8()
         val opcode_base = uint8()
         val standard_opcode_lengths =
-          if (opcode_base == 0) Array.emptyByteArray
-          else readBytes(opcode_base.toInt - 1)
+          readBytes(opcode_base.toInt - 1)
 
         val include_directories = readDirectories()
         val file_names = readFilenames()
@@ -742,7 +895,7 @@ object DWARF {
       }
 
     }
-    class Registers private (
+    case class Registers private (
         var address: Long,
         var op_index: Int,
         var file: Int,
@@ -755,7 +908,23 @@ object DWARF {
         var epilogue_begin: Boolean,
         var isa: Int,
         var descriminator: Int
-    )
+    ) {
+      def reset(default_is_stmt: Boolean) = copy(
+        address = 0L,
+        op_index = 0,
+        file = 1,
+        line = 1,
+        column = 0,
+        is_stmt = default_is_stmt,
+        basic_block = false,
+        end_sequence = false,
+        prologue_end = false,
+        epilogue_begin = false,
+        isa = 0,
+        descriminator = 0
+      )
+
+    }
     object Registers {
       def apply(default_is_stmt: Boolean) =
         new Registers(
