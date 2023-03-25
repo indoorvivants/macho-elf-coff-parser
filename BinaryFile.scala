@@ -16,7 +16,7 @@ class BinaryFile(raf: RandomAccessFile) {
 
   def seek(pos: Long): Unit = raf.seek(pos)
   def readByte(): Byte = ds.readByte()
-  def readUnsignedByte(): UByte = ds.readByte()
+  def readUnsignedByte(): UByte = ds.readUnsignedByte()
   def readUnsignedShort(): UShort = ds.readUnsignedShort()
   def readLong(): Long = ds.readLong()
   def readInt(): Int = ds.readInt()
