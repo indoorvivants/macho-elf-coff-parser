@@ -22,8 +22,18 @@ case class Metadata(
 object Main {
   def main(args: Array[String]): Unit = {
     val filename = args.head
+    val numberOfTimes =
+      args.tail.headOption.map(_.toInt).filter(_ >= 1).getOrElse(1)
+    val pid = ProcessHandle.current().pid()
+
+    println(pid)
 
     pprintln(readMetadata(filename).lines.find(0x10006c4b4L))
+
+    (1 to numberOfTimes - 1).foreach { _ =>
+      readMetadata(filename).lines.find(0x10006c4b4L)
+    }
+
   }
 
   def readMetadata(filename: String): Metadata = {

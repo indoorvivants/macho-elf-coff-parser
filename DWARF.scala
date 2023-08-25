@@ -604,32 +604,30 @@ object DWARF {
 
     case class Matrix(files: Map[Int, Filename], matrix: Vector[Vector[Row]]) {
       def find(address: Long) = {
-        matrix
-          .collectFirst {
-            // if(rows.isEmpty) false
-            case rows
-                if rows.headOption.exists(
-                  _.address <= address
-                ) && rows.lastOption
-                  .exists(_.address >= address) =>
-              var result = Option.empty[Row]
-
-              rows.zipWithIndex.foreach { case (row, idx) =>
-                if (result.isEmpty) {
-                  if (row.address == address) result = Some(row)
-                  else if (idx != 0 && address < row.address) {
-                    result = Some(rows(idx - 1))
-                  }
-                }
+        var precise = Option.empty[Row]
+        var nextBest = Option.empty[Row]
+        var sequenceIdx = 0
+        def stop = precise.nonEmpty || sequenceIdx >= matrix.size - 1
+        while (!stop) {
+          val rows = matrix(sequenceIdx)
+          sequenceIdx += 1
+          if (
+            rows.headOption.exists(
+              _.address <= address
+            ) && rows.lastOption
+              .exists(_.address >= address)
+          ) {
+            rows.zipWithIndex.foreach { case (row, idx) =>
+              if (precise.isEmpty && row.address == address) precise = Some(row)
+              else if (nextBest.isEmpty && idx != 0 && address < row.address) {
+                nextBest = Some(rows(idx - 1))
               }
-
-              result
+            }
 
           }
-          .flatten
-          .map { r =>
-            r -> files.get(r.file)
-          }
+        }
+
+        (precise orElse nextBest).map(r => r -> files(r.file))
       }
     }
 
@@ -652,7 +650,8 @@ object DWARF {
             row.copy(file = indices(row.file - 1))
           }
 
-          mtr += newRows
+          if (newRows.nonEmpty)
+            mtr += newRows
         }
 
       }
@@ -679,10 +678,7 @@ object DWARF {
               )
             )
 
-        def advanceAddress(operation_advance: Int) = {
-
-          val new_op_index =
-            (state.op_index + operation_advance) % header.maximum_operations_per_instruction
+        @inline def advanceAddress(operation_advance: Int) = {
 
           state.address += {
             if (header.version < 4)
@@ -691,7 +687,8 @@ object DWARF {
               header.minimum_instruction_length * ((state.op_index + operation_advance) / header.maximum_operations_per_instruction)
           }
 
-          state.op_index = new_op_index
+          state.op_index =
+            (state.op_index + operation_advance) % header.maximum_operations_per_instruction
         }
 
         def advanceAddressByOpcode(opcode: UByte) = {
@@ -722,7 +719,8 @@ object DWARF {
                   state.reset(header.default_is_stmt)
                 case DW_LNE_set_address =>
                   // TODO: handle 32bit machines
-                  state.address = uint64()
+                  state.address =
+                    if (length - 1 == 8) uint64() else uint32().toLong
                   state.op_index = 0
                 // println(s"Setting address to 0x${state.address.toHexString}")
                 case DW_LNE_define_file =>
@@ -746,8 +744,6 @@ object DWARF {
 
         } else if (opcode >= header.opcode_base) {
           val adjusted_opcode = opcode - header.opcode_base
-          val line_increment =
-            header.line_base + (adjusted_opcode % header.line_range)
           advanceAddressByOpcode(opcode)
 
           // println(
@@ -757,7 +753,7 @@ object DWARF {
           state.prologue_end = false
           state.epilogue_begin = false
           state.descriminator = 0
-          state.line = state.line + line_increment
+          state.line += header.line_base + (adjusted_opcode % header.line_range)
 
           sendIt
 
