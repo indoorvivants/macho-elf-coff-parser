@@ -6,6 +6,8 @@ import DWARF.Form.DW_FORM_strp
 import java.nio.channels.FileChannel
 
 import scalanative.unsigned._
+import scala.collection.mutable.Builder
+import java.nio.ByteBuffer
 
 object DWARF {
   implicit val endi: Endianness = Endianness.LITTLE
@@ -593,46 +595,338 @@ object DWARF {
 
   object Lines {
 
-    def parse(section: Section)(implicit bf: BinaryFile) = {
+    case class Row(file: Int, address: Long, line: Int, is_stmt: Boolean) {
+      override def toString() =
+        s"Row[file=$file, 0x${address.toHexString}, line=$line, stmt=$is_stmt]"
+    }
+
+    case class LineProgram(header: Header, rows: Vector[Row])
+
+    case class Matrix(files: Map[Int, Filename], matrix: Vector[Vector[Row]]) {
+      def find(address: Long) = {
+        var precise = Option.empty[Row]
+        var nextBest = Option.empty[Row]
+        var sequenceIdx = 0
+        def stop = precise.nonEmpty || sequenceIdx >= matrix.size - 1
+        while (!stop) {
+          val rows = matrix(sequenceIdx)
+          sequenceIdx += 1
+          if (
+            rows.headOption.exists(
+              _.address <= address
+            ) && rows.lastOption
+              .exists(_.address >= address)
+          ) {
+            rows.zipWithIndex.foreach { case (row, idx) =>
+              if (precise.isEmpty && row.address == address) precise = Some(row)
+              else if (nextBest.isEmpty && idx != 0 && address < row.address) {
+                nextBest = Some(rows(idx - 1))
+              }
+            }
+
+          }
+        }
+
+        (precise orElse nextBest).map(r => r -> files(r.file))
+      }
+    }
+
+    def parse(section: Section)(implicit bf: BinaryFile): Matrix = {
       bf.seek(section.offset)
+
+      def stop = bf.position() >= section.offset + section.size
+      val fileIndices = collection.mutable.Map.empty[Filename, Int]
+      val mtr = Vector.newBuilder[Vector[Row]]
+      while (!stop) {
+        val prog = readLineProgram()
+
+        if (prog.header.file_names.nonEmpty) {
+
+          val indices = prog.header.file_names.map(f =>
+            fileIndices.getOrElseUpdate(f, fileIndices.size)
+          )
+
+          val newRows = prog.rows.map { row =>
+            row.copy(file = indices(row.file - 1))
+          }
+
+          if (newRows.nonEmpty)
+            mtr += newRows
+        }
+
+      }
+
+      Matrix(fileIndices.map(_.swap).toMap, mtr.result())
+    }
+    def readLineProgram()(implicit bf: BinaryFile) = {
       val header = Header.parse()
-      println(header)
+      val stdOpcodeLengths = header.standard_opcode_lengths
+
+      def readOpcode(
+          state: Registers,
+          add: Row => Unit,
+          addFile: Filename => Unit
+      ) = {
+        def sendIt =
+          if (state.line > 0 && state.column > 0)
+            add(
+              Row(
+                file = state.file,
+                address = state.address,
+                line = state.line,
+                is_stmt = state.is_stmt
+              )
+            )
+
+        @inline def advanceAddress(operation_advance: Int) = {
+
+          state.address += {
+            if (header.version < 4)
+              header.minimum_instruction_length * operation_advance
+            else
+              header.minimum_instruction_length * ((state.op_index + operation_advance) / header.maximum_operations_per_instruction)
+          }
+
+          state.op_index =
+            (state.op_index + operation_advance) % header.maximum_operations_per_instruction
+        }
+
+        def advanceAddressByOpcode(opcode: UByte) = {
+          val adjusted_opcode = opcode - header.opcode_base
+          val operation_advance = adjusted_opcode / header.line_range
+          advanceAddress(operation_advance)
+        }
+
+        val opcode: UByte = uint8()
+        if (opcode == 0) {
+          // extended
+          val length = read_unsigned_leb128()
+          val ucode = uint8()
+          val code = ExtendedOpcode.fromCode(ucode)
+
+          // println(s"Extended: $length, $code, 0x${ucode.toHexString}")
+
+          code match {
+            case None =>
+              throw new RuntimeException(s"Unknown enhanced opcode $ucode")
+            case Some(value) =>
+              import ExtendedOpcode._
+              value match {
+                case DW_LNE_end_sequence =>
+                  state.end_sequence = true
+                  // println(s"Sending address 0x${state.address.toHexString}")
+                  sendIt
+                  state.reset(header.default_is_stmt)
+                case DW_LNE_set_address =>
+                  // TODO: handle 32bit machines
+                  state.address =
+                    if (length - 1 == 8) uint64() else uint32().toLong
+                  state.op_index = 0
+                // println(s"Setting address to 0x${state.address.toHexString}")
+                case DW_LNE_define_file =>
+                  val filenameA = Array.newBuilder[Byte]
+                  var stop = false
+                  while (!stop) {
+                    val byte = bf.readByte()
+                    stop = byte == 0
+                    if (!stop) filenameA += byte
+                  }
+                  val filename = new String(filenameA.result())
+                  val dirIndex = read_unsigned_leb128()
+                  val lastModified = read_unsigned_leb128()
+                  val length = read_unsigned_leb128()
+
+                case DW_LNE_set_discriminator =>
+                  state.descriminator = read_unsigned_leb128()
+              }
+
+          }
+
+        } else if (opcode >= header.opcode_base) {
+          val adjusted_opcode = opcode - header.opcode_base
+          advanceAddressByOpcode(opcode)
+
+          // println(
+          //   s"Special $opcode, adjusted_opcode: $adjusted_opcode, line_increment: $line_increment"
+          // )
+          state.basic_block = false
+          state.prologue_end = false
+          state.epilogue_begin = false
+          state.descriminator = 0
+          state.line += header.line_base + (adjusted_opcode % header.line_range)
+
+          sendIt
+
+        } else {
+          StandardOpcode.fromCode(opcode) match {
+            case None =>
+              throw new RuntimeException(s"Unknown standard opcode $opcode")
+
+            case Some(value) =>
+              // pprint.log(s"Standard: $value")
+              import StandardOpcode._
+              value match {
+                case DW_LNS_copy =>
+                  sendIt
+                  state.basic_block = false
+                  state.prologue_end = false
+                  state.epilogue_begin = false
+                  state.descriminator = 0
+                case DW_LNS_advance_pc =>
+                  advanceAddress(read_unsigned_leb128())
+
+                case DW_LNS_advance_line =>
+                  state.line = state.line + read_signed_leb128()
+
+                case DW_LNS_set_file =>
+                  state.file = read_unsigned_leb128()
+                case DW_LNS_set_column =>
+                  state.column = read_unsigned_leb128()
+                case DW_LNS_negate_stmt =>
+                  state.is_stmt = !state.is_stmt
+                case DW_LNS_set_basic_block =>
+                  state.basic_block = true
+                case DW_LNS_const_add_pc =>
+                  advanceAddressByOpcode(255)
+                case DW_LNS_fixed_advance_pc =>
+                  state.address = state.address + uint16()
+                  state.op_index = 0
+                case DW_LNS_set_prologue_end =>
+                  state.prologue_end = true
+                case DW_LNS_set_epilogue_begin =>
+                  state.epilogue_begin = true
+                case DW_LNS_set_isa =>
+                  state.isa = read_unsigned_leb128()
+              }
+          }
+        }
+      }
+
+      val endPosition = header.offset + header.unit_length
+
+      def stop = bf.position() >= endPosition
+
+      val registers = Registers(header.default_is_stmt)
+      val rows = Vector.newBuilder[Row]
+      val files = Vector.newBuilder[Filename]
+
+      while (!stop) {
+        readOpcode(registers, rows += _, files += _)
+      }
+
+      LineProgram(header, rows.result())
+
     }
     case class Header(
-        unit_length: Int,
-        version: Short,
-        header_length: Int,
-        minimum_instruction_length: Byte,
-        maximum_operations_per_instruction: Byte,
-        default_is_stmt: Byte,
+        unit_length: UInt,
+        offset: Long,
+        version: UShort,
+        header_length: UInt,
+        minimum_instruction_length: UByte,
+        maximum_operations_per_instruction: UByte,
+        default_is_stmt: Boolean,
         line_base: Byte,
-        line_range: Byte,
-        opcode_base: Byte,
+        line_range: UByte,
+        opcode_base: UByte,
         standard_opcode_lengths: Array[Byte],
         include_directories: Seq[String],
-        file_names: Seq[String]
+        file_names: Seq[Filename]
+    )
+
+    case class Filename(
+        name: String,
+        directoryIndex: UInt,
+        lastModified: UInt,
+        fileLength: UInt
     )
     object Header {
-      def parse()(implicit ds: BinaryFile) = {
+      def parse()(implicit ds: BinaryFile): Header = {
         val unit_length = uint32()
+        val offset = ds.position()
         val version = uint16()
         val header_length = uint32()
         val minimum_instruction_length = uint8()
-        val maximum_operations_per_instruction = uint8()
+        val maximum_operations_per_instruction =
+          if (version >= 4) uint8() else 1
         val default_is_stmt = uint8() == 1
-        val line_base = uint8()
+        val line_base = ds.readByte()
         val line_range = uint8()
         val opcode_base = uint8()
+        val standard_opcode_lengths =
+          readBytes(opcode_base.toInt - 1)
 
-        pprint.log(
-          s"$unit_length, $version, $header_length, " +
-            s"$minimum_instruction_length, $maximum_operations_per_instruction, " +
-            s"$default_is_stmt, $line_base, $line_range,$opcode_base"
+        val include_directories = readDirectories()
+        val file_names = readFilenames()
+
+        Header(
+          unit_length = unit_length,
+          offset = offset,
+          version = version,
+          header_length = header_length,
+          minimum_instruction_length = minimum_instruction_length,
+          maximum_operations_per_instruction =
+            maximum_operations_per_instruction,
+          default_is_stmt = default_is_stmt,
+          line_base = line_base,
+          line_range = line_range,
+          opcode_base = opcode_base,
+          standard_opcode_lengths = standard_opcode_lengths,
+          include_directories = include_directories,
+          file_names = file_names
         )
 
       }
+
+      private def readDirectories()(implicit ds: BinaryFile) = {
+        val builder = Vector.newBuilder[String]
+        var stopAll = false
+        val str = Array.newBuilder[Byte]
+        while (!stopAll) {
+          var stopString = false
+          str.clear()
+          while (!stopString) {
+            val nextByte = ds.readByte()
+            stopString = nextByte == 0
+            if (!stopString) str += nextByte
+          }
+
+          val collected = new String(str.result())
+          stopAll = collected.length == 0
+          if (!stopAll) builder += collected
+        }
+        builder.result()
+      }
+
+      private def readFilenames()(implicit ds: BinaryFile) = {
+        val builder = Vector.newBuilder[Filename]
+        var stopAll = false
+        val str = Array.newBuilder[Byte]
+        while (!stopAll) {
+          var stopString = false
+          str.clear()
+          while (!stopString) {
+            val nextByte = ds.readByte()
+            stopString = nextByte == 0
+            if (!stopString) str += nextByte
+          }
+
+          val collected = new String(str.result())
+          stopAll = collected.length == 0
+          if (!stopAll) {
+
+            builder += Filename(
+              collected,
+              directoryIndex = read_unsigned_leb128(),
+              lastModified = read_unsigned_leb128(),
+              fileLength = read_unsigned_leb128()
+            )
+          }
+        }
+        builder.result()
+      }
+
     }
-    class Registers private (
+    case class Registers private (
         var address: Long,
         var op_index: Int,
         var file: Int,
@@ -645,7 +939,23 @@ object DWARF {
         var epilogue_begin: Boolean,
         var isa: Int,
         var descriminator: Int
-    )
+    ) {
+      def reset(default_is_stmt: Boolean) = copy(
+        address = 0L,
+        op_index = 0,
+        file = 1,
+        line = 1,
+        column = 0,
+        is_stmt = default_is_stmt,
+        basic_block = false,
+        end_sequence = false,
+        prologue_end = false,
+        epilogue_begin = false,
+        isa = 0,
+        descriminator = 0
+      )
+
+    }
     object Registers {
       def apply(default_is_stmt: Boolean) =
         new Registers(
@@ -663,6 +973,69 @@ object DWARF {
           descriminator = 0
         )
     }
-  }
 
+    sealed abstract class StandardOpcode(val code: Int)
+        extends Product
+        with Serializable {
+      override def toString(): String =
+        s"[${getClass().getSimpleName().dropRight(1)}:0x${code.toHexString.reverse.padTo(2, '0').reverse}]"
+    }
+
+    object StandardOpcode {
+      case object DW_LNS_copy extends StandardOpcode(0x01)
+      case object DW_LNS_advance_pc extends StandardOpcode(0x02)
+      case object DW_LNS_advance_line extends StandardOpcode(0x03)
+      case object DW_LNS_set_file extends StandardOpcode(0x04)
+      case object DW_LNS_set_column extends StandardOpcode(0x05)
+      case object DW_LNS_negate_stmt extends StandardOpcode(0x06)
+      case object DW_LNS_set_basic_block extends StandardOpcode(0x07)
+      case object DW_LNS_const_add_pc extends StandardOpcode(0x08)
+      case object DW_LNS_fixed_advance_pc extends StandardOpcode(0x09)
+      case object DW_LNS_set_prologue_end extends StandardOpcode(0x0a)
+      case object DW_LNS_set_epilogue_begin extends StandardOpcode(0x0b)
+      case object DW_LNS_set_isa extends StandardOpcode(0x0c)
+
+      private val lookup = List(
+        DW_LNS_copy,
+        DW_LNS_advance_pc,
+        DW_LNS_advance_line,
+        DW_LNS_set_file,
+        DW_LNS_set_column,
+        DW_LNS_negate_stmt,
+        DW_LNS_set_basic_block,
+        DW_LNS_const_add_pc,
+        DW_LNS_fixed_advance_pc,
+        DW_LNS_set_prologue_end
+      ).map(r => r.code -> r).toMap
+
+      def fromCode(code: Int): Option[StandardOpcode] = lookup.get(code)
+    }
+
+    sealed abstract class ExtendedOpcode(val code: Int)
+        extends Product
+        with Serializable {
+      override def toString(): String =
+        s"[${getClass().getSimpleName().dropRight(1)}:0x${code.toHexString.reverse.padTo(2, '0').reverse}]"
+    }
+
+    object ExtendedOpcode {
+      case object DW_LNE_end_sequence extends ExtendedOpcode(0x01)
+      case object DW_LNE_set_address extends ExtendedOpcode(0x02)
+      case object DW_LNE_define_file extends ExtendedOpcode(0x03)
+      case object DW_LNE_set_discriminator extends ExtendedOpcode(0x04)
+      case object DW_LNE_lo_user extends ExtendedOpcode(0x80)
+      case object DW_LNE_hi_user extends ExtendedOpcode(0xff)
+
+      private val lookup = List(
+        DW_LNE_end_sequence,
+        DW_LNE_set_address,
+        DW_LNE_define_file,
+        DW_LNE_set_discriminator,
+        DW_LNE_lo_user,
+        DW_LNE_hi_user
+      ).map(r => r.code -> r).toMap
+
+      def fromCode(code: Int): Option[ExtendedOpcode] = lookup.get(code)
+    }
+  }
 }

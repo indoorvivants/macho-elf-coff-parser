@@ -15,19 +15,42 @@ import scala.scalanative.unsigned.UInt
 
 case class Location(low_pc: Long, high_pc: Long, filename: String)
 
+case class Metadata(
+    lines: DWARF.Lines.Matrix
+)
+
 object Main {
   def main(args: Array[String]): Unit = {
     val filename = args.head
-    val file = new File(filename)
+    val platform = args.tail.headOption.map(_.toLowerCase())
+    // val numberOfTimes =
+    //   args.tail.headOption.map(_.toInt).filter(_ >= 1).getOrElse(1)
+    val pid = ProcessHandle.current().pid()
+
+    pprintln(readMetadata(filename, platform))
+
+    // println(pid)
+
+    // pprintln(readMetadata(filename, platform).lines.find(0x10006c4b4L))
+
+    // (1 to numberOfTimes - 1).foreach { _ =>
+    //   readMetadata(filename).lines.find(0x10006c4b4L)
+    // }
+
+  }
+
+  def readMetadata(filename: String, platform: Option[String]): Metadata = {
+    def isOS(os: Platform.OS) =
+      (Platform.os == os && platform.isEmpty) || platform.contains(os.string)
+
     implicit val bf: BinaryFile = new BinaryFile(
       new RandomAccessFile(filename, "r")
     )
 
-    if (Platform.os == Platform.OS.MacOS) {
+    if (isOS(Platform.OS.MacOS)) {
 
       val macho = MachO.parse(bf)
       val sections = macho.segments.flatMap(_.sections)
-      pprintln(sections)
 
       val dwarf = for {
         debug_info <- sections.find(_.sectname == "__debug_info")
@@ -43,22 +66,47 @@ object Main {
           debug_str = DWARF.Section(debug_str.offset, debug_str.size)
         )
 
-        pprintln(readLocations(dies, strings).take(5))
+        val lines = DWARF.Lines
+          .parse(DWARF.Section(debug_line.offset, debug_line.size))
 
-        pprintln(
-          DWARF.Lines
-            .parse(DWARF.Section(debug_line.offset, debug_line.size))
-        )
+        Metadata(lines)
       }
-    } else if (Platform.os == Platform.OS.Linux) {
-      sys.error(
-        "Linux is not supported yet, will someone please write an ELF parser"
-      )
+
+      dwarf.get
+    } else if (isOS(Platform.OS.Linux)) {
+      val elf = ELF.parse(bf)
+      val sections = elf.sections
+
+      pprint.log(sections)
+
+      pprint.log(sections)
+
+      val dwarf = for {
+        debug_info <- sections.find(_.name == ".debug_info")
+        debug_abbrev <- sections.find(_.name == ".debug_abbrev")
+        debug_str <- sections.find(_.name == ".debug_str")
+        debug_line <- sections.find(_.name == ".debug_line")
+
+      } yield {
+        val (dies, strings) = readDWARF(
+          debug_info = DWARF.Section(debug_info.offset, debug_info.size),
+          debug_abbrev = DWARF.Section(debug_abbrev.offset, debug_abbrev.size),
+          debug_str = DWARF.Section(debug_str.offset, debug_str.size)
+        )
+
+        val lines = DWARF.Lines
+          .parse(DWARF.Section(debug_line.offset, debug_line.size))
+
+        Metadata(lines)
+
+      }
+
+      dwarf.get
     } else if (Platform.os == Platform.OS.Windows) {
       sys.error(
         "Windows is not supported yet, will someone please write a COFF parser, or whatever windows uses"
       )
-    }
+    } else ???
 
   }
 
