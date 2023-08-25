@@ -51,9 +51,10 @@ object Main {
         )
       }
     } else if (Platform.os == Platform.OS.Linux) {
-      sys.error(
-        "Linux is not supported yet, will someone please write an ELF parser"
-      )
+      pprintln(ELF.parse(bf))
+      // sys.error(
+      //   "Linux is not supported yet, will someone please write an ELF parser"
+      // )
     } else if (Platform.os == Platform.OS.Windows) {
       sys.error(
         "Windows is not supported yet, will someone please write a COFF parser, or whatever windows uses"
